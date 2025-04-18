@@ -1,12 +1,10 @@
 (window => {
   const {
     screen: { width, height },
-    navigator: { language, doNotTrack: ndnt, msDoNotTrack: msdnt },
+    navigator: { language },
     location,
     document,
     history,
-    top,
-    doNotTrack,
   } = window;
   const { hostname, href, origin } = location;
   const { currentScript, referrer } = document;
@@ -22,9 +20,7 @@
   const hostUrl = attr(_data + 'host-url');
   const tag = attr(_data + 'tag');
   const autoTrack = attr(_data + 'auto-track') !== _false;
-  const dnt = attr(_data + 'do-not-track') === _true;
   const excludeSearch = attr(_data + 'exclude-search') === _true;
-  const excludeHash = attr(_data + 'exclude-hash') === _true;
   const domain = attr(_data + 'domains') || '';
   const domains = domain.split(',').map(n => n.trim());
   const host =
@@ -34,24 +30,56 @@
   const eventRegex = /data-umami-event-([\w-_]+)/;
   const eventNameAttribute = _data + 'umami-event';
   const delayDuration = 300;
+  const urlOverwrite = attr(_data + 'url-overwrite');
 
   /* Helper functions */
 
+  const encode = str => {
+    if (!str) {
+      return undefined;
+    }
+
+    try {
+      const result = decodeURI(str);
+
+      if (result !== str) {
+        return result;
+      }
+    } catch (e) {
+      return str;
+    }
+
+    return encodeURI(str);
+  };
+
+  const parseURL = url => {
+    try {
+      // use location.origin as the base to handle cases where the url is a relative path
+      const { pathname, search, hash } = new URL(url, location.href);
+      url = pathname + search + hash;
+    } catch (e) {
+      /* empty */
+    }
+
+    const parsedUrl = excludeSearch ? url.split('?')[0] : url;
+
+    if (urlOverwrite && typeof window[urlOverwrite] === 'function') {
+      return window[urlOverwrite](parsedUrl) || parsedUrl;
+    }
+
+    return parsedUrl;
+  };
+
   const getPayload = () => ({
     website,
+    hostname,
     screen,
     language,
-    title,
-    hostname,
-    url: currentUrl,
-    referrer: currentRef,
+    title: encode(title),
+    url: encode(currentUrl),
+    referrer: encode(currentRef),
     tag: tag ? tag : undefined,
   });
-
-  const hasDoNotTrack = () => {
-    const dnt = doNotTrack || ndnt || msdnt;
-    return dnt === 1 || dnt === '1' || dnt === 'yes';
-  };
 
   /* Event handlers */
 
@@ -59,17 +87,7 @@
     if (!url) return;
 
     currentRef = currentUrl;
-    currentUrl = new URL(url, location.href);
-
-    if (excludeSearch) {
-      currentUrl.search = '';
-    }
-
-    if (excludeHash) {
-      currentUrl.hash = '';
-    }
-
-    currentUrl = currentUrl.toString();
+    currentUrl = parseURL(url.toString());
 
     if (currentUrl !== currentRef) {
       setTimeout(track, delayDuration);
@@ -166,9 +184,7 @@
                   e.preventDefault();
                 }
                 return trackElement(parentElement).then(() => {
-                  if (!external) {
-                    (target === '_top' ? top.location : location).href = href;
-                  }
+                  if (!external) location.href = href;
                 });
               }
             } else if (parentElement.tagName === 'BUTTON') {
@@ -186,11 +202,9 @@
   /* Tracking functions */
 
   const trackingDisabled = () =>
-    disabled ||
     !website ||
     (localStorage && localStorage.getItem('umami.disabled')) ||
-    (domain && !domains.includes(hostname)) ||
-    (dnt && hasDoNotTrack());
+    (domain && !domains.includes(hostname));
 
   const send = async (payload, type = 'event') => {
     if (trackingDisabled()) return;
@@ -208,15 +222,10 @@
         method: 'POST',
         body: JSON.stringify({ type, payload }),
         headers,
-        credentials: 'omit',
       });
+      const text = await res.text();
 
-      const data = await res.json();
-
-      if (data) {
-        disabled = !!data.disabled;
-        cache = data.cache;
-      }
+      return (cache = text);
     } catch (e) {
       /* empty */
     }
@@ -258,12 +267,11 @@
     };
   }
 
-  let currentUrl = href;
+  let currentUrl = parseURL(href);
   let currentRef = referrer.startsWith(origin) ? '' : referrer;
   let title = document.title;
   let cache;
   let initialized;
-  let disabled = false;
 
   if (autoTrack && !trackingDisabled()) {
     if (document.readyState === 'complete') {
